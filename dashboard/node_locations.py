@@ -16,6 +16,10 @@ CITY_CENTER = (12.9716, 77.5946)  # Bengaluru, India -- change to your city
 
 NODE_LOCATIONS = {
     "traffic-node-07": (12.9756, 77.6006),
+    "traffic-node-08": (12.9782, 77.6068),
+    "hospital-node-01": (12.9642, 77.5975),
+    "financial-core-01": (12.9720, 77.6045),
+    "power-substation-01": (12.9680, 77.6110),
     "water-meter-14": (12.9698, 77.5910),
     "camera-22": (12.9741, 77.5983),
 }

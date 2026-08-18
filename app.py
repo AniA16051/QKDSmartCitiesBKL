@@ -155,6 +155,38 @@ class IntegratedSmartCity:
                 'key_vault': 100.0,
                 'data_points': [], 'last_update': datetime.now()
             },
+            'traffic_junction': {
+                'id': 'NODE-TRF-02', 'type': 'traffic_flow',
+                'location': 'MG Road & Ring Junction',
+                'lat': 12.9782, 'lon': 77.6068,
+                'status': 'secure', 'qber': 0.0, 'last_key': None,
+                'key_vault': 100.0,
+                'data_points': [], 'last_update': datetime.now()
+            },
+            'hospital_node': {
+                'id': 'NODE-MED-01', 'type': 'medical_telemetry',
+                'location': 'City General Hospital',
+                'lat': 12.9642, 'lon': 77.5975,
+                'status': 'secure', 'qber': 0.0, 'last_key': None,
+                'key_vault': 100.0,
+                'data_points': [], 'last_update': datetime.now()
+            },
+            'financial_core': {
+                'id': 'NODE-FIN-01', 'type': 'banking_qkd_trunk',
+                'location': 'Financial District Core',
+                'lat': 12.9720, 'lon': 77.6045,
+                'status': 'secure', 'qber': 0.0, 'last_key': None,
+                'key_vault': 100.0,
+                'data_points': [], 'last_update': datetime.now()
+            },
+            'power_substation': {
+                'id': 'NODE-PWR-01', 'type': 'smart_grid',
+                'location': 'East Power Grid Substation',
+                'lat': 12.9680, 'lon': 77.6110,
+                'status': 'secure', 'qber': 0.0, 'last_key': None,
+                'key_vault': 100.0,
+                'data_points': [], 'last_update': datetime.now()
+            },
             'water_meter': {
                 'id': 'NODE-WTR-01', 'type': 'water_consumption',
                 'location': 'Downtown Reservoir',
@@ -172,7 +204,9 @@ class IntegratedSmartCity:
                 'data_points': [], 'last_update': datetime.now()
             }
         }
-        self.attacked_target = "None"  # "None", "All Nodes", "traffic_light", "water_meter", "surveillance"
+        self.attacked_target = "None"
+        self.isolated_nodes = set()
+        self.rerouted_lifeline = False
         self.mqtt_client = None
         self.mqtt_connected = False
         self.terminal_logs = []
@@ -243,25 +277,60 @@ class IntegratedSmartCity:
             self.terminal_logs = self.terminal_logs[-50:]
     
     def reroute_key_supply(self, source_name="Financial District Core"):
-        """Emergency Lifeline: Replenish key vaults from an uncompromised auxiliary QKD trunk."""
+        """Emergency Lifeline: Replenish key vaults and reroute optical mesh lines."""
+        self.rerouted_lifeline = True
         for s in self.sensors.values():
             s['key_vault'] = 100.0
-            if s['status'] == 'compromised':
+            if s['status'] in ['compromised', 'blackout']:
                 s['status'] = 'secure'
         self.attacked_target = "None"
-        self.log_terminal(f"LIFELINE :: KEY SUPPLY REROUTED FROM [{source_name.upper()}]. ALL VAULTS AT 100%", "SECURE")
+        self.isolated_nodes.clear()
+        self.log_terminal(f"LIFELINE :: OPTICAL MESH REROUTED VIA [{source_name.upper()}]. ALL VAULTS AT 100%", "SECURE")
+        self.update_all_sensors()
+
+    def isolate_standby_node(self, target):
+        """Standby Option: Quarantine and isolate compromised node, severing all optical lines while preserving network continuity."""
+        if target == "All Nodes":
+            for k in self.sensors.keys():
+                self.isolated_nodes.add(k)
+        elif target in self.sensors:
+            self.isolated_nodes.add(target)
+        self.log_terminal(f"STANDBY :: QUARANTINE PROTOCOL ENGAGED. NODE [{target.upper()}] ISOLATED (ALL LINES BROKEN).", "WARN")
+        self.update_all_sensors()
+
+    def fix_and_restore_node(self, target="All Nodes"):
+        """Fix / Restore node to clean operational state."""
+        if target == "All Nodes":
+            self.isolated_nodes.clear()
+            self.attacked_target = "None"
+            for s in self.sensors.values():
+                s['status'] = 'secure'
+                s['key_vault'] = 100.0
+        else:
+            self.isolated_nodes.discard(target)
+            if self.attacked_target == target:
+                self.attacked_target = "None"
+            if target in self.sensors:
+                self.sensors[target]['status'] = 'secure'
+                self.sensors[target]['key_vault'] = 100.0
+        self.log_terminal(f"RESTORE :: NODE [{target.upper()}] PURGED & RECONNECTED TO SECURE MESH", "SECURE")
         self.update_all_sensors()
 
     def simulate_sensor(self, sensor_name):
         sensor = self.sensors[sensor_name]
-        is_attacked = (self.attacked_target == "All Nodes") or (self.attacked_target == sensor_name)
+        is_isolated = sensor_name in self.isolated_nodes
+        is_attacked = (self.attacked_target == "All Nodes") or (self.attacked_target == sensor_name) or is_isolated
+        
         qkd_result = UnifiedBB84.simulate_bb84_protocol(key_length=256, attack=is_attacked)
         
         sensor['qber'] = qkd_result['qber']
         sensor['last_update'] = datetime.now()
         
-        # Key Vault Reserve Drain & Blackout Logic
-        if qkd_result['success']:
+        if is_isolated:
+            sensor['status'] = 'compromised'
+            sensor['key_vault'] = 0.0
+            sensor['last_key'] = None
+        elif qkd_result['success']:
             sensor['key_vault'] = min(100.0, sensor.get('key_vault', 100.0) + 15.0)
             sensor['status'] = 'secure'
             sensor['last_key'] = qkd_result['final_key']
@@ -274,16 +343,27 @@ class IntegratedSmartCity:
                 sensor['last_key'] = None
             else:
                 sensor['status'] = 'compromised'
-                # Use stored key from vault for temporary transmission
                 sensor['last_key'] = hashlib.sha256(f"vault-{sensor['id']}-{int(sensor['key_vault'])}".encode()).hexdigest()
         
         # Telemetry generation
-        if sensor['status'] == 'blackout':
+        if is_isolated:
+            data_value = 0
+            data_unit = 'ISOLATED / QUARANTINED'
+        elif sensor['status'] == 'blackout':
             data_value = 0
             data_unit = 'OFFLINE (BLACKOUT)'
         elif sensor['type'] == 'traffic_flow':
-            data_value = random.randint(10, 100)
+            data_value = random.randint(15, 120)
             data_unit = 'cars/min'
+        elif sensor['type'] == 'medical_telemetry':
+            data_value = f"{random.randint(65, 88)} bpm / {random.randint(96, 99)}% SpO2"
+            data_unit = 'vitals'
+        elif sensor['type'] == 'banking_qkd_trunk':
+            data_value = f"${random.randint(120, 890)}k / tx"
+            data_unit = 'encrypted ledger'
+        elif sensor['type'] == 'smart_grid':
+            data_value = f"{round(random.uniform(228.0, 234.0), 1)} kV / 60Hz"
+            data_unit = 'grid sync'
         elif sensor['type'] == 'water_consumption':
             data_value = round(random.uniform(50, 200), 2)
             data_unit = 'L/h'
@@ -300,7 +380,12 @@ class IntegratedSmartCity:
             'key_preview': sensor['last_key'][:8] + '...' if sensor['last_key'] else None
         }
         
-        if sensor['status'] == 'secure':
+        if is_isolated:
+            self.log_terminal(
+                f"ISOLATION ACTIVE  {sensor['id']}  QBER={sensor['qber']:.1f}%  OPTICAL LINKS CUT  AWAITING REPAIR",
+                "WARN"
+            )
+        elif sensor['status'] == 'secure':
             self.log_terminal(
                 f"BB84 OK  {sensor['id']}  QBER={sensor['qber']:.1f}%  VAULT={sensor['key_vault']:.0f}%  KEY={sensor['last_key'][:8]}...{sensor['last_key'][-4:]}",
                 "SECURE"
@@ -325,9 +410,9 @@ class IntegratedSmartCity:
         if len(sensor['data_points']) > 25:
             sensor['data_points'] = sensor['data_points'][-25:]
         
-        # China-style dynamic BB84 camera tracking & handoff
-        if sensor_name in ['traffic_light', 'surveillance'] and sensor['status'] != 'blackout':
-            cams = ['NODE-CAM-01', 'NODE-TRF-01']
+        # Dynamic BB84 camera tracking & handoff
+        if sensor_name in ['traffic_light', 'traffic_junction', 'surveillance'] and sensor['status'] != 'blackout' and not is_isolated:
+            cams = ['NODE-CAM-01', 'NODE-TRF-01', 'NODE-TRF-02']
             next_cam = random.choice(cams)
             self.tracking_target['active_camera'] = next_cam
             self.tracking_target['speed_kmh'] = round(random.uniform(42.0, 68.0), 1)
@@ -343,6 +428,7 @@ class IntegratedSmartCity:
     def toggle_attack(self, target="All Nodes"):
         if self.attacked_target == target:
             self.attacked_target = "None"
+            self.isolated_nodes.discard(target)
             msg = f"ATTACK STOPPED :: CHANNEL RESTORED TO CLEAN STATE"
         else:
             self.attacked_target = target
@@ -574,10 +660,11 @@ def main():
     st.markdown('<p class="soc-subtitle">Real-time BB84 Quantum Key Distribution Simulation &mdash; IoT Sensor Network Security Monitor</p>', unsafe_allow_html=True)
     
     # ── Global Status Bar ──
-    sys_status = '<span class="status-val-red">ATTACK ACTIVE</span>' if attack_active else '<span class="status-val-green">ACTIVE DEFENSE</span>'
+    sys_status = '<span class="status-val-red">ATTACK ACTIVE</span>' if (attack_active or len(sc.isolated_nodes) > 0) else '<span class="status-val-green">ACTIVE DEFENSE</span>'
     mqtt_status = '<span class="status-val-green">CONNECTED</span>' if sc.mqtt_connected else '<span class="status-val-amber">STANDALONE</span>'
     tls_val = "ON" if (sc._mqtt_use_tls or sc._mqtt_port == 8883) else "OFF"
     
+    online_count = sum(1 for s in sc.sensors.values() if s['status'] == 'secure')
     st.markdown(f"""
     <div class="status-bar">
         <div class="status-item"><span class="status-label">System:</span> {sys_status}</div>
@@ -585,7 +672,7 @@ def main():
         <div class="status-item"><span class="status-label">Broker:</span> <span class="status-val-cyan">{sc._mqtt_broker}:{sc._mqtt_port}</span></div>
         <div class="status-item"><span class="status-label">TLS:</span> <span class="status-val-cyan">{tls_val}</span></div>
         <div class="status-item"><span class="status-label">MQTT:</span> {mqtt_status}</div>
-        <div class="status-item"><span class="status-label">Sensors:</span> <span class="status-val-green">3 ONLINE</span></div>
+        <div class="status-item"><span class="status-label">Sensors:</span> <span class="status-val-green">{online_count}/{len(sc.sensors)} ONLINE</span></div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -596,9 +683,13 @@ def main():
     
     target_mapping = {
         "All Nodes": "All Nodes",
-        "Surveillance Camera": "surveillance",
-        "Traffic Signal": "traffic_light",
-        "Water Utility": "water_meter"
+        "Traffic Signal 01 (Main St)": "traffic_light",
+        "Traffic Signal 02 (MG Rd)": "traffic_junction",
+        "Hospital Telemetry": "hospital_node",
+        "Financial Core (QKD Trunk)": "financial_core",
+        "Power Substation": "power_substation",
+        "Water Utility": "water_meter",
+        "Surveillance Camera": "surveillance"
     }
 
     with c1:
@@ -654,49 +745,70 @@ def main():
                 st.rerun()
 
     with c5:
-        target_display = f"ACTIVE ({sc.attacked_target})" if sc.attack_active else "SECURED"
+        if len(sc.isolated_nodes) > 0:
+            target_display = f"ISOLATED ({len(sc.isolated_nodes)})"
+        elif sc.attack_active:
+            target_display = f"ACTIVE ({sc.attacked_target})"
+        else:
+            target_display = "SECURED"
         st.metric(
             "Channel State",
             target_display,
-            help="Reflects whether an active eavesdropper (Eve) is present on any quantum channel."
+            help="Reflects whether an active eavesdropper (Eve) is present on any quantum channel or nodes are quarantined."
         )
     
     st.markdown("---")
     
     # ══════════════════════════════════════════════════════════════
-    # THREAT REMEDIATION & FAILSAFES (Conditional)
+    # THREAT REMEDIATION & FAILSAFES
     # ══════════════════════════════════════════════════════════════
-    if sc.attack_active:
+    if sc.attack_active or len(sc.isolated_nodes) > 0:
         st.markdown('<div class="section-hdr" style="color: var(--accent-amber);">Active Countermeasures & Failsafes</div>', unsafe_allow_html=True)
-        fc1, fc2, fc3 = st.columns([1.5, 1.5, 2])
+        fc1, fc2, fc3, fc4 = st.columns([1.5, 1.5, 1.2, 1.8])
         with fc1:
-            if st.button("REROUTE KEY SUPPLY FROM FINANCIAL DISTRICT", use_container_width=True, help="Emergency Lifeline: Reconnects depleted nodes to the secondary uncompromised Financial District optical quantum backbone, fully replenishing key vaults to 100%."):
+            if st.button("REROUTE KEY SUPPLY FROM FINANCIAL DISTRICT", use_container_width=True, help="Emergency Lifeline: Reconnects depleted nodes to the secondary uncompromised Financial District optical quantum backbone, fully replenishing key vaults to 100% and rerouting mesh connections."):
                 sc.reroute_key_supply(source_name="Financial District Backbone")
                 st.rerun()
         with fc2:
-            if st.button("PROVISION STANDBY NODE", use_container_width=True, help="Spin up a cold-spare node to maintain network continuity while the primary node is isolated."):
-                sc.log_terminal(f"FAILSAFE :: STANDBY NODE PROVISIONED. NETWORK CONTINUITY MAINTAINED.", "SECURE")
-                sc.toggle_attack(target=sc.attacked_target)
+            if st.button("PROVISION STANDBY NODE", use_container_width=True, help="Quarantine compromised node: Severs all quantum optical lines to it, breaks mesh paths, and isolates it while network continuity remains active."):
+                target_to_isolate = sc.attacked_target if sc.attack_active else "All Nodes"
+                sc.isolate_standby_node(target=target_to_isolate)
                 st.rerun()
         with fc3:
-            st.markdown(f'<div style="color: var(--accent-red); font-family: \'JetBrains Mono\', monospace; font-size: 0.8rem; padding-top: 10px;">&gt; Channel compromised ({sc.attacked_target}). Key vaults draining. Refuse unencrypted data.</div>', unsafe_allow_html=True)
+            if st.button("FIX & RESTORE MESH", use_container_width=True, help="Purge isolation, reconnect all broken optical links, and restore clean status."):
+                sc.fix_and_restore_node("All Nodes")
+                st.rerun()
+        with fc4:
+            if len(sc.isolated_nodes) > 0:
+                st.markdown(f'<div style="color: var(--accent-red); font-family: \'JetBrains Mono\', monospace; font-size: 0.8rem; padding-top: 10px;">&gt; Isolated nodes: {", ".join(sc.isolated_nodes)}. Optical links severed. Stays in breach until fixed.</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div style="color: var(--accent-red); font-family: \'JetBrains Mono\', monospace; font-size: 0.8rem; padding-top: 10px;">&gt; Channel compromised ({sc.attacked_target}). Key vaults draining. Refuse unencrypted data.</div>', unsafe_allow_html=True)
         st.markdown("---")
     
     # ══════════════════════════════════════════════════════════════
-    # NODE STATUS CARDS (3-Column)
+    # NODE STATUS CARDS (Smart City Metropolitan Grid)
     # ══════════════════════════════════════════════════════════════
-    st.markdown('<div class="section-hdr">IoT Sensor Node Status & Key Vault Reserves</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-hdr">Smart City Metropolitan IoT Nodes & Key Vault Reserves</div>', unsafe_allow_html=True)
     
     sensor_meta = [
-        ('traffic_light', 'Traffic Signal', 'Monitors vehicle throughput at a signalized intersection.'),
-        ('water_meter', 'Water Utility', 'Tracks volumetric water flow at a municipal reservoir pump station.'),
-        ('surveillance', 'Surveillance Camera', 'Security feed status for a public area monitoring node.'),
+        ('traffic_light', 'Traffic Signal 01', 'Vehicle throughput at Main & 5th Ave.'),
+        ('traffic_junction', 'Traffic Signal 02', 'High-density MG Road Ring Junction flow.'),
+        ('hospital_node', 'Hospital Emergency Telemetry', 'Encrypted patient vitals and ICU telemetry.'),
+        ('financial_core', 'Financial District Core', 'Inter-bank transaction settlement QKD trunk.'),
+        ('power_substation', 'Power Grid Substation', 'Grid telemetry & phase angle monitoring.'),
+        ('water_meter', 'Water Utility', 'Municipal reservoir pump flow tracking.'),
+        ('surveillance', 'Surveillance Camera', 'Optical public monitoring node with QKD handoff.'),
     ]
     
-    cols = st.columns(3)
-    for col, (key, label, tooltip) in zip(cols, sensor_meta):
+    # Render cards in rows of 3 and 4
+    row1_cols = st.columns(4)
+    row2_cols = st.columns(3)
+    card_cols = list(row1_cols) + list(row2_cols)
+    
+    for col, (key, label, tooltip) in zip(card_cols, sensor_meta):
         s = sc.sensors[key]
         status_code = s['status']
+        is_iso = key in sc.isolated_nodes
         with col:
             with st.container(border=True):
                 st.markdown(f"**{label}**")
@@ -706,10 +818,12 @@ def main():
                 m1.metric(
                     "QBER",
                     f"{s['qber']:.1f}%",
-                    help=f"Quantum Bit Error Rate for this node. {tooltip} Values below 11% indicate a secure channel."
+                    help=f"Quantum Bit Error Rate for this node. {tooltip}"
                 )
                 
-                if status_code == 'secure':
+                if is_iso:
+                    stat_str = "ISOLATED"
+                elif status_code == 'secure':
                     stat_str = "SECURE"
                 elif status_code == 'compromised':
                     stat_str = "DRAINING"
@@ -719,91 +833,164 @@ def main():
                 m2.metric(
                     "Status",
                     stat_str,
-                    help="SECURE: QBER < 11%. DRAINING: BB84 aborted, consuming vault keys. BLACKOUT: Vault depleted (0%), offline."
+                    help="SECURE: Normal. DRAINING: Vault active. BLACKOUT: Vault 0%. ISOLATED: Optical links severed."
                 )
                 m3.metric(
                     "Key Vault",
                     f"{s.get('key_vault', 100.0):.0f}%",
-                    help="Stored reserve of BB84 one-time-pad/AES keys. Drains when live key generation aborts."
+                    help="Stored reserve of BB84 keys."
                 )
                 
                 vault_pct = max(0.0, min(1.0, s.get('key_vault', 100.0) / 100.0))
-                st.progress(vault_pct, text=f"Key Vault Reserve: {s.get('key_vault', 100.0):.0f}%")
+                st.progress(vault_pct, text=f"Vault: {s.get('key_vault', 100.0):.0f}%")
                 
-                if s['last_key']:
-                    st.code(f"AES-256 Key: {s['last_key'][:12]}...{s['last_key'][-6:]}", language=None)
+                if s['last_key'] and not is_iso:
+                    st.code(f"Key: {s['last_key'][:10]}...{s['last_key'][-4:]}", language=None)
                 else:
-                    st.code("AES-256 Key: REFUSED — zero-trust blackout", language=None)
+                    st.code("Key: REFUSED / SEVERED", language=None)
                 
-                if st.button("CRYPTOGRAPHIC PING", key=f"ping_{key}", use_container_width=True, help="Send a cryptographic challenge to this node. It must encrypt the response using its valid AES-256 key."):
-                    success = sc.ping_node(key)
-                    if success:
-                        st.toast(f"Ping OK for {s['id']}")
+                b1, b2 = st.columns(2)
+                with b1:
+                    if st.button("PING", key=f"ping_{key}", use_container_width=True):
+                        success = sc.ping_node(key)
+                        if success:
+                            st.toast(f"Ping OK for {s['id']}")
+                        else:
+                            st.toast(f"Ping FAILED for {s['id']}")
+                        st.rerun()
+                with b2:
+                    if is_iso:
+                        if st.button("RECONNECT", key=f"rec_{key}", use_container_width=True):
+                            sc.fix_and_restore_node(key)
+                            st.rerun()
                     else:
-                        st.toast(f"Ping FAILED for {s['id']} (Blackout / Vault Empty)")
-                    st.rerun()
+                        if st.button("ISOLATE", key=f"iso_{key}", use_container_width=True):
+                            sc.isolate_standby_node(key)
+                            st.rerun()
                 
                 if s['data_points']:
                     val = s['data_points'][-1]['value']
-                    st.caption(f"Latest telemetry: **{val}**  ·  Updated: {s['last_update'].strftime('%H:%M:%S')}")
+                    st.caption(f"Latest: **{val}**  ·  {s['last_update'].strftime('%H:%M:%S')}")
     
     # ══════════════════════════════════════════════════════════════
-    # GEOSPATIAL MAP + QBER CHART (Side by Side)
+    # GEOSPATIAL MAP WITH OPTICAL FIBER MESH + QBER CHART
     # ══════════════════════════════════════════════════════════════
     st.markdown("---")
     
-    map_col, chart_col = st.columns([1, 1])
+    map_col, chart_col = st.columns([1.1, 0.9])
     
     with map_col:
-        st.markdown('<div class="section-hdr">Geospatial Node Distribution</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-hdr">Metropolitan Geospatial Mesh & Optical Lines</div>', unsafe_allow_html=True)
         
         lats, lons, names, colors, hovers = [], [], [], [], []
-        for s in sc.sensors.values():
+        for s_key, s in sc.sensors.items():
             lats.append(s['lat'])
             lons.append(s['lon'])
             names.append(s['id'])
-            if s['status'] == 'blackout':
+            if s_key in sc.isolated_nodes or s['status'] == 'blackout':
                 c = '#64748B'
             elif s['status'] == 'compromised':
                 c = '#EF4444'
             else:
                 c = '#10B981'
             colors.append(c)
-            hovers.append(f"{s['id']}<br>{s['location']}<br>QBER: {s['qber']:.1f}%<br>Vault: {s['key_vault']:.0f}%<br>Status: {s['status'].upper()}")
+            iso_tag = " (ISOLATED)" if s_key in sc.isolated_nodes else ""
+            hovers.append(f"{s['id']}{iso_tag}<br>{s['location']}<br>QBER: {s['qber']:.1f}%<br>Vault: {s['key_vault']:.0f}%<br>Status: {s['status'].upper()}")
         
         fig_map = go.Figure()
         
-        # Attack pulse rings
-        for s in sc.sensors.values():
-            if s['status'] in ['compromised', 'blackout']:
+        # Draw Optical Fiber Quantum Mesh Links
+        # Define baseline mesh topology connections
+        if sc.rerouted_lifeline:
+            # Rerouted via Financial District Hub star-topology
+            mesh_edges = [
+                ('financial_core', 'traffic_light'),
+                ('financial_core', 'traffic_junction'),
+                ('financial_core', 'hospital_node'),
+                ('financial_core', 'power_substation'),
+                ('financial_core', 'water_meter'),
+                ('financial_core', 'surveillance'),
+            ]
+        else:
+            # Standard city ring & cross-grid topology
+            mesh_edges = [
+                ('traffic_light', 'traffic_junction'),
+                ('traffic_junction', 'financial_core'),
+                ('financial_core', 'power_substation'),
+                ('power_substation', 'hospital_node'),
+                ('hospital_node', 'water_meter'),
+                ('water_meter', 'surveillance'),
+                ('surveillance', 'traffic_light'),
+                ('financial_core', 'hospital_node'),
+                ('traffic_light', 'hospital_node')
+            ]
+        
+        for u_key, v_key in mesh_edges:
+            u = sc.sensors.get(u_key)
+            v = sc.sensors.get(v_key)
+            if not u or not v:
+                continue
+            
+            u_broken = (u_key in sc.isolated_nodes) or (u['status'] in ['compromised', 'blackout'])
+            v_broken = (v_key in sc.isolated_nodes) or (v['status'] in ['compromised', 'blackout'])
+            
+            if u_key in sc.isolated_nodes or v_key in sc.isolated_nodes:
+                # Isolated node: line completely severed (do not draw or draw faint dark gray)
+                continue
+            elif u_broken or v_broken:
+                # Breached channel link: red line
+                fig_map.add_trace(go.Scattermapbox(
+                    lat=[u['lat'], v['lat']],
+                    lon=[u['lon'], v['lon']],
+                    mode='lines',
+                    line=dict(width=2, color='#EF4444'),
+                    hoverinfo='none',
+                    showlegend=False
+                ))
+            else:
+                # Active clean quantum optical line: green dotted/dashed line
+                fig_map.add_trace(go.Scattermapbox(
+                    lat=[u['lat'], v['lat']],
+                    lon=[u['lon'], v['lon']],
+                    mode='lines',
+                    line=dict(width=2, color='#10B981'),
+                    hoverinfo='none',
+                    showlegend=False
+                ))
+        
+        # Pulse rings for compromised or isolated nodes
+        for s_key, s in sc.sensors.items():
+            if s_key in sc.isolated_nodes or s['status'] in ['compromised', 'blackout']:
+                p_col = '#64748B' if s_key in sc.isolated_nodes or s['status'] == 'blackout' else '#EF4444'
                 fig_map.add_trace(go.Scattermapbox(
                     lat=[s['lat']], lon=[s['lon']], mode='markers',
-                    marker=dict(size=40, color='#EF4444' if s['status'] == 'compromised' else '#64748B', opacity=0.25),
+                    marker=dict(size=35, color=p_col, opacity=0.3),
                     hoverinfo='none', showlegend=False
                 ))
         
+        # Node Markers
         fig_map.add_trace(go.Scattermapbox(
             lat=lats, lon=lons, mode='markers+text',
-            marker=dict(size=14, color=colors, opacity=0.9),
+            marker=dict(size=14, color=colors, opacity=0.95),
             text=names, textposition="top center",
-            textfont=dict(size=10, color="#F3F4F6", family="JetBrains Mono"),
+            textfont=dict(size=9, color="#F3F4F6", family="JetBrains Mono"),
             hoverinfo='text', hovertext=hovers, showlegend=False
         ))
         
         fig_map.update_layout(
             mapbox_style="carto-darkmatter",
-            mapbox=dict(center=dict(lat=12.9732, lon=77.5966), zoom=12.5),
+            mapbox=dict(center=dict(lat=12.9715, lon=77.6010), zoom=12.6),
             margin=dict(l=0, r=0, t=0, b=0),
-            height=340,
+            height=370,
             paper_bgcolor="#080B10",
         )
         st.plotly_chart(fig_map, use_container_width=True)
     
     with chart_col:
-        st.markdown('<div class="section-hdr">QBER Threat Assessment</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-hdr">QBER Threat Assessment & Thresholds</div>', unsafe_allow_html=True)
         
         sensors_list = list(sc.sensors.values())
-        bar_colors = ['#EF4444' if s['qber'] >= 11.0 else '#10B981' for s in sensors_list]
+        bar_colors = ['#EF4444' if (s['qber'] >= 11.0 or s['id'] in [sc.sensors[k]['id'] for k in sc.isolated_nodes]) else '#10B981' for s in sensors_list]
         
         fig_qber = go.Figure(go.Bar(
             x=[s['id'] for s in sensors_list],
@@ -811,24 +998,24 @@ def main():
             marker_color=bar_colors,
             text=[f"{s['qber']:.1f}%" for s in sensors_list],
             textposition='outside',
-            textfont=dict(color='#F3F4F6', family="JetBrains Mono", size=12),
+            textfont=dict(color='#F3F4F6', family="JetBrains Mono", size=11),
             hovertemplate="Node: %{x}<br>QBER: %{y:.1f}%<extra></extra>"
         ))
         
         fig_qber.add_hline(
             y=11.0, line_dash="dash", line_color="#EF4444", line_width=2,
             annotation_text="BB84 Security Threshold (11%)",
-            annotation_font=dict(color="#EF4444", family="JetBrains Mono", size=11),
+            annotation_font=dict(color="#EF4444", family="JetBrains Mono", size=10),
             annotation_position="top left"
         )
         
         fig_qber.update_layout(
             template="plotly_dark",
             paper_bgcolor="#080B10", plot_bgcolor="#0E131F",
-            margin=dict(l=40, r=20, t=20, b=40),
-            height=340,
-            yaxis=dict(title="QBER (%)", range=[0, max(35, max(s['qber'] for s in sensors_list) + 8)], gridcolor="#162032"),
-            xaxis=dict(gridcolor="#162032"),
+            margin=dict(l=35, r=15, t=20, b=35),
+            height=370,
+            yaxis=dict(title="QBER (%)", range=[0, max(38, max(s['qber'] for s in sensors_list) + 8)], gridcolor="#162032"),
+            xaxis=dict(gridcolor="#162032", tickangle=-30),
         )
         st.plotly_chart(fig_qber, use_container_width=True)
     
@@ -837,23 +1024,34 @@ def main():
     # ══════════════════════════════════════════════════════════════
     st.markdown("---")
     
-    tbl_col, term_col = st.columns([1, 1])
+    tbl_col, term_col = st.columns([1.1, 0.9])
     
     with tbl_col:
-        st.markdown('<div class="section-hdr">Node Telemetry & Vault Matrix</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-hdr">Metropolitan Node Telemetry & Vault Matrix</div>', unsafe_allow_html=True)
         
         rows = []
-        for s in sc.sensors.values():
+        for s_key, s in sc.sensors.items():
             latest = s['data_points'][-1]['value'] if s['data_points'] else 'N/A'
-            key_hash = f"{s['last_key'][:8]}...{s['last_key'][-4:]}" if s['last_key'] else "BLACKOUT"
+            is_iso = s_key in sc.isolated_nodes
+            if is_iso:
+                key_hash = "SEVERED"
+                state_str = "ISOLATED"
+            elif s['last_key']:
+                key_hash = f"{s['last_key'][:8]}...{s['last_key'][-4:]}"
+                state_str = s['status'].upper()
+            else:
+                key_hash = "BLACKOUT"
+                state_str = s['status'].upper()
+            
             rows.append({
                 'Node ID': s['id'],
+                'Type': s['type'],
                 'Location': s['location'],
                 'QBER (%)': round(s['qber'], 1),
                 'Key Vault': f"{s.get('key_vault', 100.0):.0f}%",
                 'Payload': str(latest),
                 'AES-256 Key': key_hash,
-                'State': s['status'].upper()
+                'State': state_str
             })
         
         df = pd.DataFrame(rows)
@@ -865,7 +1063,7 @@ def main():
                 "QBER (%)": st.column_config.NumberColumn(format="%.1f%%", help="Quantum Bit Error Rate"),
                 "Key Vault": st.column_config.TextColumn(help="Stored reserve of QKD keys."),
                 "AES-256 Key": st.column_config.TextColumn(help="Truncated SHA-256 digest of BB84 key."),
-                "State": st.column_config.TextColumn(help="SECURE, COMPROMISED (DRAINING), or BLACKOUT."),
+                "State": st.column_config.TextColumn(help="SECURE, COMPROMISED, BLACKOUT, or ISOLATED."),
                 "Payload": st.column_config.TextColumn(help="Latest sensor telemetry reading."),
             }
         )
@@ -899,7 +1097,7 @@ def main():
     
     trk = sc.tracking_target
     active_cam_node = sc.sensors.get('surveillance' if trk['active_camera'] == 'NODE-CAM-01' else 'traffic_light')
-    is_cam_blackout = active_cam_node['status'] == 'blackout'
+    is_cam_blackout = (active_cam_node['status'] == 'blackout') or ('surveillance' in sc.isolated_nodes and trk['active_camera'] == 'NODE-CAM-01')
     
     tc1, tc2, tc3, tc4 = st.columns([2, 1.5, 2, 2.5])
     with tc1:
@@ -909,7 +1107,7 @@ def main():
             help="Intelligent metropolitan tracking: automated optical camera handoff across urban intersections secured by BB84 quantum keys."
         )
     with tc2:
-        cam_disp = "OFFLINE" if is_cam_blackout else trk['active_camera']
+        cam_disp = "OFFLINE (ISOLATED)" if is_cam_blackout else trk['active_camera']
         st.metric(
             "Active Camera Feed",
             cam_disp,
@@ -933,13 +1131,19 @@ def main():
         """, unsafe_allow_html=True)
     
     # ══════════════════════════════════════════════════════════════
-    # TREND CHARTS (Tabbed)
+    # TREND CHARTS (Tabbed for All City Nodes)
     # ══════════════════════════════════════════════════════════════
     st.markdown("---")
     st.markdown('<div class="section-hdr">Telemetry, Key Vault & QBER Time Series</div>', unsafe_allow_html=True)
     
-    tab_labels = ["Traffic Signal", "Water Utility", "Surveillance"]
-    tab_keys = ['traffic_light', 'water_meter', 'surveillance']
+    tab_labels = [
+        "Traffic 01", "Traffic 02 (MG Rd)", "Hospital ICU", 
+        "Financial Core", "Power Grid", "Water Utility", "Surveillance"
+    ]
+    tab_keys = [
+        'traffic_light', 'traffic_junction', 'hospital_node',
+        'financial_core', 'power_substation', 'water_meter', 'surveillance'
+    ]
     tabs = st.tabs(tab_labels)
     
     for tab, key in zip(tabs, tab_keys):
@@ -951,7 +1155,7 @@ def main():
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     x=df_t['time'], y=df_t['value'],
-                    mode='lines+markers', name='Telemetry',
+                    mode='lines+markers', name='Telemetry Value',
                     line=dict(color='#3B82F6', width=2),
                     hovertemplate="Value: %{y}<br>Time: %{x}<extra></extra>"
                 ))
@@ -973,8 +1177,8 @@ def main():
                     paper_bgcolor="#080B10", plot_bgcolor="#0E131F",
                     margin=dict(l=40, r=40, t=20, b=40),
                     height=280,
-                    yaxis=dict(title="Telemetry Value", gridcolor="#162032"),
-                    yaxis2=dict(title="QBER & Key Vault (%)", overlaying="y", side="right",
+                    yaxis=dict(title="Telemetry", gridcolor="#162032"),
+                    yaxis2=dict(title="QBER & Vault (%)", overlaying="y", side="right",
                                 range=[0, 105], gridcolor="#162032"),
                     xaxis=dict(gridcolor="#162032"),
                     hovermode='x unified',
