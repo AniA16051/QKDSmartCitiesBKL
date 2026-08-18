@@ -152,6 +152,7 @@ class IntegratedSmartCity:
                 'location': 'Main St & 5th Ave',
                 'lat': 12.9756, 'lon': 77.6006,
                 'status': 'secure', 'qber': 0.0, 'last_key': None,
+                'key_vault': 100.0,
                 'data_points': [], 'last_update': datetime.now()
             },
             'water_meter': {
@@ -159,6 +160,7 @@ class IntegratedSmartCity:
                 'location': 'Downtown Reservoir',
                 'lat': 12.9698, 'lon': 77.5910,
                 'status': 'secure', 'qber': 0.0, 'last_key': None,
+                'key_vault': 100.0,
                 'data_points': [], 'last_update': datetime.now()
             },
             'surveillance': {
@@ -166,6 +168,7 @@ class IntegratedSmartCity:
                 'location': 'Central Park North',
                 'lat': 12.9741, 'lon': 77.5983,
                 'status': 'secure', 'qber': 0.0, 'last_key': None,
+                'key_vault': 100.0,
                 'data_points': [], 'last_update': datetime.now()
             }
         }
@@ -173,6 +176,14 @@ class IntegratedSmartCity:
         self.mqtt_client = None
         self.mqtt_connected = False
         self.terminal_logs = []
+        self.tracking_target = {
+            'vehicle_id': 'VEH-8824 [Silver Sedan]',
+            'active_camera': 'NODE-CAM-01',
+            'last_handoff': datetime.now(),
+            'speed_kmh': 48.5,
+            'pattern': 'NOMINAL FLOW',
+            'qkd_session_key': None
+        }
         
         for name in self.sensors:
             self.simulate_sensor(name)
@@ -231,17 +242,46 @@ class IntegratedSmartCity:
         if len(self.terminal_logs) > 50:
             self.terminal_logs = self.terminal_logs[-50:]
     
+    def reroute_key_supply(self, source_name="Financial District Core"):
+        """Emergency Lifeline: Replenish key vaults from an uncompromised auxiliary QKD trunk."""
+        for s in self.sensors.values():
+            s['key_vault'] = 100.0
+            if s['status'] == 'compromised':
+                s['status'] = 'secure'
+        self.attacked_target = "None"
+        self.log_terminal(f"LIFELINE :: KEY SUPPLY REROUTED FROM [{source_name.upper()}]. ALL VAULTS AT 100%", "SECURE")
+        self.update_all_sensors()
+
     def simulate_sensor(self, sensor_name):
         sensor = self.sensors[sensor_name]
         is_attacked = (self.attacked_target == "All Nodes") or (self.attacked_target == sensor_name)
         qkd_result = UnifiedBB84.simulate_bb84_protocol(key_length=256, attack=is_attacked)
         
-        sensor['status'] = 'secure' if qkd_result['success'] else 'compromised'
         sensor['qber'] = qkd_result['qber']
-        sensor['last_key'] = qkd_result['final_key']
         sensor['last_update'] = datetime.now()
         
-        if sensor['type'] == 'traffic_flow':
+        # Key Vault Reserve Drain & Blackout Logic
+        if qkd_result['success']:
+            sensor['key_vault'] = min(100.0, sensor.get('key_vault', 100.0) + 15.0)
+            sensor['status'] = 'secure'
+            sensor['last_key'] = qkd_result['final_key']
+        else:
+            # Drain reserve when BB84 key generation aborts
+            drain_amt = random.uniform(25.0, 35.0)
+            sensor['key_vault'] = max(0.0, sensor.get('key_vault', 100.0) - drain_amt)
+            if sensor['key_vault'] <= 0.0:
+                sensor['status'] = 'blackout'
+                sensor['last_key'] = None
+            else:
+                sensor['status'] = 'compromised'
+                # Use stored key from vault for temporary transmission
+                sensor['last_key'] = hashlib.sha256(f"vault-{sensor['id']}-{int(sensor['key_vault'])}".encode()).hexdigest()
+        
+        # Telemetry generation
+        if sensor['status'] == 'blackout':
+            data_value = 0
+            data_unit = 'OFFLINE (BLACKOUT)'
+        elif sensor['type'] == 'traffic_flow':
             data_value = random.randint(10, 100)
             data_unit = 'cars/min'
         elif sensor['type'] == 'water_consumption':
@@ -256,27 +296,46 @@ class IntegratedSmartCity:
             'location': sensor['location'], 'timestamp': datetime.now().isoformat(),
             'value': data_value, 'unit': data_unit,
             'qkd_status': sensor['status'], 'qber': sensor['qber'],
+            'key_vault': sensor['key_vault'],
             'key_preview': sensor['last_key'][:8] + '...' if sensor['last_key'] else None
         }
         
         if sensor['status'] == 'secure':
             self.log_terminal(
-                f"BB84 OK  {sensor['id']}  QBER={sensor['qber']:.1f}%  KEY={sensor['last_key'][:8]}...{sensor['last_key'][-4:]}",
+                f"BB84 OK  {sensor['id']}  QBER={sensor['qber']:.1f}%  VAULT={sensor['key_vault']:.0f}%  KEY={sensor['last_key'][:8]}...{sensor['last_key'][-4:]}",
                 "SECURE"
+            )
+        elif sensor['status'] == 'compromised':
+            self.log_terminal(
+                f"BB84 ABORT  {sensor['id']}  QBER={sensor['qber']:.1f}% >= 11.0%  DRAINING VAULT: {sensor['key_vault']:.0f}%",
+                "WARN"
             )
         else:
             self.log_terminal(
-                f"BB84 ABORT  {sensor['id']}  QBER={sensor['qber']:.1f}% >= 11.0%  KEY DESTROYED",
-                "WARN"
+                f"BLACKOUT  {sensor['id']}  VAULT 0%  TRANSMISSION REFUSED (ZERO-TRUST)",
+                "ALERT"
             )
         
         sensor['data_points'].append({
             'time': datetime.now(),
             'value': data_value if isinstance(data_value, (int, float)) else (1 if data_value == 'MOTION_DET' else 0),
-            'qber': sensor['qber']
+            'qber': sensor['qber'],
+            'vault': sensor['key_vault']
         })
         if len(sensor['data_points']) > 25:
             sensor['data_points'] = sensor['data_points'][-25:]
+        
+        # China-style dynamic BB84 camera tracking & handoff
+        if sensor_name in ['traffic_light', 'surveillance'] and sensor['status'] != 'blackout':
+            cams = ['NODE-CAM-01', 'NODE-TRF-01']
+            next_cam = random.choice(cams)
+            self.tracking_target['active_camera'] = next_cam
+            self.tracking_target['speed_kmh'] = round(random.uniform(42.0, 68.0), 1)
+            patterns = ['NOMINAL FLOW', 'NOMINAL FLOW', 'SUDDEN LANE CONVERGENCE', 'SPEED ANOMALY']
+            self.tracking_target['pattern'] = random.choice(patterns)
+            if sensor['last_key']:
+                self.tracking_target['qkd_session_key'] = sensor['last_key'][:16]
+            self.tracking_target['last_handoff'] = datetime.now()
         
         self.publish_sensor_data(sensor_name, sensor_data)
         return sensor_data
@@ -303,13 +362,13 @@ class IntegratedSmartCity:
         sensor = self.sensors[sensor_name]
         nonce = hashlib.sha256(str(time.time()).encode()).hexdigest()[:16].upper()
         
-        if sensor['status'] == 'secure' and sensor['last_key']:
+        if sensor['status'] in ['secure', 'compromised'] and sensor['last_key']:
             self.log_terminal(f"PING :: [ {sensor['id']} ] CRYPTOGRAPHIC CHALLENGE (NONCE: {nonce})", "INFO")
             self.log_terminal(f"PING OK :: [ {sensor['id']} ] RESPONSE ENCRYPTED WITH KEY {sensor['last_key'][:8]}...", "SECURE")
             return True
         else:
             self.log_terminal(f"PING :: [ {sensor['id']} ] CRYPTOGRAPHIC CHALLENGE (NONCE: {nonce})", "INFO")
-            self.log_terminal(f"PING FAILED :: [ {sensor['id']} ] NO VALID KEY TO ENCRYPT CHALLENGE", "WARN")
+            self.log_terminal(f"PING FAILED :: [ {sensor['id']} ] NODE IN BLACKOUT (VAULT EMPTY)", "WARN")
             return False
 
 
@@ -609,11 +668,10 @@ def main():
     # ══════════════════════════════════════════════════════════════
     if sc.attack_active:
         st.markdown('<div class="section-hdr" style="color: var(--accent-amber);">Active Countermeasures & Failsafes</div>', unsafe_allow_html=True)
-        fc1, fc2, fc3 = st.columns([1, 1, 2])
+        fc1, fc2, fc3 = st.columns([1.5, 1.5, 2])
         with fc1:
-            if st.button("INITIATE QUANTUM REROUTING", use_container_width=True, help="Bypass the compromised channel and reroute quantum transmission via a secondary secure path."):
-                sc.log_terminal(f"FAILSAFE :: QUANTUM REROUTING INITIATED FOR {sc.attacked_target.upper()}", "SECURE")
-                sc.toggle_attack(target=sc.attacked_target)
+            if st.button("REROUTE KEY SUPPLY FROM FINANCIAL DISTRICT", use_container_width=True, help="Emergency Lifeline: Reconnects depleted nodes to the secondary uncompromised Financial District optical quantum backbone, fully replenishing key vaults to 100%."):
+                sc.reroute_key_supply(source_name="Financial District Backbone")
                 st.rerun()
         with fc2:
             if st.button("PROVISION STANDBY NODE", use_container_width=True, help="Spin up a cold-spare node to maintain network continuity while the primary node is isolated."):
@@ -621,13 +679,13 @@ def main():
                 sc.toggle_attack(target=sc.attacked_target)
                 st.rerun()
         with fc3:
-            st.markdown(f'<div style="color: var(--accent-red); font-family: \'JetBrains Mono\', monospace; font-size: 0.8rem; padding-top: 10px;">&gt; Node \'{sc.attacked_target}\' is compromised. Awaiting manual remediation.</div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="color: var(--accent-red); font-family: \'JetBrains Mono\', monospace; font-size: 0.8rem; padding-top: 10px;">&gt; Channel compromised ({sc.attacked_target}). Key vaults draining. Refuse unencrypted data.</div>', unsafe_allow_html=True)
         st.markdown("---")
     
     # ══════════════════════════════════════════════════════════════
     # NODE STATUS CARDS (3-Column)
     # ══════════════════════════════════════════════════════════════
-    st.markdown('<div class="section-hdr">IoT Sensor Node Status</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-hdr">IoT Sensor Node Status & Key Vault Reserves</div>', unsafe_allow_html=True)
     
     sensor_meta = [
         ('traffic_light', 'Traffic Signal', 'Monitors vehicle throughput at a signalized intersection.'),
@@ -638,35 +696,51 @@ def main():
     cols = st.columns(3)
     for col, (key, label, tooltip) in zip(cols, sensor_meta):
         s = sc.sensors[key]
-        is_secure = s['status'] == 'secure'
+        status_code = s['status']
         with col:
             with st.container(border=True):
                 st.markdown(f"**{label}**")
                 st.caption(f"{s['location']}  ·  `{s['id']}`")
                 
-                m1, m2 = st.columns(2)
+                m1, m2, m3 = st.columns(3)
                 m1.metric(
                     "QBER",
                     f"{s['qber']:.1f}%",
                     help=f"Quantum Bit Error Rate for this node. {tooltip} Values below 11% indicate a secure channel."
                 )
+                
+                if status_code == 'secure':
+                    stat_str = "SECURE"
+                elif status_code == 'compromised':
+                    stat_str = "DRAINING"
+                else:
+                    stat_str = "BLACKOUT"
+                
                 m2.metric(
                     "Status",
-                    "SECURE" if is_secure else "BREACH",
-                    help="SECURE: QBER < 11%, key exchange succeeded. BREACH: QBER >= 11%, key was aborted to prevent information leakage."
+                    stat_str,
+                    help="SECURE: QBER < 11%. DRAINING: BB84 aborted, consuming vault keys. BLACKOUT: Vault depleted (0%), offline."
                 )
+                m3.metric(
+                    "Key Vault",
+                    f"{s.get('key_vault', 100.0):.0f}%",
+                    help="Stored reserve of BB84 one-time-pad/AES keys. Drains when live key generation aborts."
+                )
+                
+                vault_pct = max(0.0, min(1.0, s.get('key_vault', 100.0) / 100.0))
+                st.progress(vault_pct, text=f"Key Vault Reserve: {s.get('key_vault', 100.0):.0f}%")
                 
                 if s['last_key']:
                     st.code(f"AES-256 Key: {s['last_key'][:12]}...{s['last_key'][-6:]}", language=None)
                 else:
-                    st.code("AES-256 Key: ABORTED — threshold exceeded", language=None)
+                    st.code("AES-256 Key: REFUSED — zero-trust blackout", language=None)
                 
                 if st.button("CRYPTOGRAPHIC PING", key=f"ping_{key}", use_container_width=True, help="Send a cryptographic challenge to this node. It must encrypt the response using its valid AES-256 key."):
                     success = sc.ping_node(key)
                     if success:
                         st.toast(f"Ping OK for {s['id']}")
                     else:
-                        st.toast(f"Ping FAILED for {s['id']}")
+                        st.toast(f"Ping FAILED for {s['id']} (Blackout / Vault Empty)")
                     st.rerun()
                 
                 if s['data_points']:
@@ -688,18 +762,23 @@ def main():
             lats.append(s['lat'])
             lons.append(s['lon'])
             names.append(s['id'])
-            c = '#EF4444' if s['status'] == 'compromised' else '#10B981'
+            if s['status'] == 'blackout':
+                c = '#64748B'
+            elif s['status'] == 'compromised':
+                c = '#EF4444'
+            else:
+                c = '#10B981'
             colors.append(c)
-            hovers.append(f"{s['id']}<br>{s['location']}<br>QBER: {s['qber']:.1f}%<br>Status: {s['status'].upper()}")
+            hovers.append(f"{s['id']}<br>{s['location']}<br>QBER: {s['qber']:.1f}%<br>Vault: {s['key_vault']:.0f}%<br>Status: {s['status'].upper()}")
         
         fig_map = go.Figure()
         
         # Attack pulse rings
         for s in sc.sensors.values():
-            if s['status'] == 'compromised':
+            if s['status'] in ['compromised', 'blackout']:
                 fig_map.add_trace(go.Scattermapbox(
                     lat=[s['lat']], lon=[s['lon']], mode='markers',
-                    marker=dict(size=40, color='#EF4444', opacity=0.25),
+                    marker=dict(size=40, color='#EF4444' if s['status'] == 'compromised' else '#64748B', opacity=0.25),
                     hoverinfo='none', showlegend=False
                 ))
         
@@ -761,16 +840,17 @@ def main():
     tbl_col, term_col = st.columns([1, 1])
     
     with tbl_col:
-        st.markdown('<div class="section-hdr">Node Telemetry Matrix</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-hdr">Node Telemetry & Vault Matrix</div>', unsafe_allow_html=True)
         
         rows = []
         for s in sc.sensors.values():
             latest = s['data_points'][-1]['value'] if s['data_points'] else 'N/A'
-            key_hash = f"{s['last_key'][:8]}...{s['last_key'][-4:]}" if s['last_key'] else "ABORTED"
+            key_hash = f"{s['last_key'][:8]}...{s['last_key'][-4:]}" if s['last_key'] else "BLACKOUT"
             rows.append({
                 'Node ID': s['id'],
                 'Location': s['location'],
                 'QBER (%)': round(s['qber'], 1),
+                'Key Vault': f"{s.get('key_vault', 100.0):.0f}%",
                 'Payload': str(latest),
                 'AES-256 Key': key_hash,
                 'State': s['status'].upper()
@@ -782,10 +862,11 @@ def main():
             use_container_width=True,
             hide_index=True,
             column_config={
-                "QBER (%)": st.column_config.NumberColumn(format="%.1f%%", help="Quantum Bit Error Rate — percentage of mismatched sifted key bits between Alice and Bob"),
-                "AES-256 Key": st.column_config.TextColumn(help="Truncated SHA-256 digest of the BB84 sifted key. Used for AES-GCM-256 payload encryption."),
-                "State": st.column_config.TextColumn(help="SECURE if QBER < 11%, COMPROMISED if QBER >= 11%."),
-                "Payload": st.column_config.TextColumn(help="Latest sensor telemetry reading from this node."),
+                "QBER (%)": st.column_config.NumberColumn(format="%.1f%%", help="Quantum Bit Error Rate"),
+                "Key Vault": st.column_config.TextColumn(help="Stored reserve of QKD keys."),
+                "AES-256 Key": st.column_config.TextColumn(help="Truncated SHA-256 digest of BB84 key."),
+                "State": st.column_config.TextColumn(help="SECURE, COMPROMISED (DRAINING), or BLACKOUT."),
+                "Payload": st.column_config.TextColumn(help="Latest sensor telemetry reading."),
             }
         )
     
@@ -811,10 +892,51 @@ def main():
         st.markdown(f'<div class="term-output">{term_content}</div>', unsafe_allow_html=True)
     
     # ══════════════════════════════════════════════════════════════
+    # QUANTUM CAMERA HANDOFF & TRAFFIC ANOMALY MONITOR
+    # ══════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown('<div class="section-hdr">QKD Dynamic Multi-Camera Handoff & Traffic Flow Surveillance</div>', unsafe_allow_html=True)
+    
+    trk = sc.tracking_target
+    active_cam_node = sc.sensors.get('surveillance' if trk['active_camera'] == 'NODE-CAM-01' else 'traffic_light')
+    is_cam_blackout = active_cam_node['status'] == 'blackout'
+    
+    tc1, tc2, tc3, tc4 = st.columns([2, 1.5, 2, 2.5])
+    with tc1:
+        st.metric(
+            "Tracked Target",
+            trk['vehicle_id'],
+            help="Intelligent metropolitan tracking: automated optical camera handoff across urban intersections secured by BB84 quantum keys."
+        )
+    with tc2:
+        cam_disp = "OFFLINE" if is_cam_blackout else trk['active_camera']
+        st.metric(
+            "Active Camera Feed",
+            cam_disp,
+            help="Current video feed streaming target tracking metadata."
+        )
+    with tc3:
+        pattern_color = "#EF4444" if "ANOMALY" in trk['pattern'] else "#10B981"
+        st.markdown(f"""
+        <div style="background: var(--bg-panel); border: 1px solid var(--border); padding: 10px 14px; height: 100%;">
+            <div style="color: var(--text-muted); font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; font-weight: 600; text-transform: uppercase;">Traffic Pattern Analysis</div>
+            <div style="color: {pattern_color}; font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 0.95rem; margin-top: 4px;">{trk['pattern']} ({trk['speed_kmh']} km/h)</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with tc4:
+        key_disp = trk['qkd_session_key'] if (trk['qkd_session_key'] and not is_cam_blackout) else "BLACKOUT (UNENCRYPTED FEED REFUSED)"
+        st.markdown(f"""
+        <div style="background: var(--bg-panel); border: 1px solid var(--border); padding: 10px 14px; height: 100%;">
+            <div style="color: var(--text-muted); font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; font-weight: 600; text-transform: uppercase;">Camera Handoff BB84 Key Ring</div>
+            <div style="color: var(--accent-cyan); font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; margin-top: 4px; word-break: break-all;"><code>{key_disp}</code></div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # ══════════════════════════════════════════════════════════════
     # TREND CHARTS (Tabbed)
     # ══════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.markdown('<div class="section-hdr">Telemetry & QBER Time Series</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-hdr">Telemetry, Key Vault & QBER Time Series</div>', unsafe_allow_html=True)
     
     tab_labels = ["Traffic Signal", "Water Utility", "Surveillance"]
     tab_keys = ['traffic_light', 'water_meter', 'surveillance']
@@ -839,14 +961,21 @@ def main():
                     line=dict(color='#EF4444', width=2, dash='dash'),
                     hovertemplate="QBER: %{y:.1f}%<br>Time: %{x}<extra></extra>"
                 ))
+                if 'vault' in df_t.columns:
+                    fig.add_trace(go.Scatter(
+                        x=df_t['time'], y=df_t['vault'],
+                        mode='lines+markers', name='Key Vault (%)', yaxis='y2',
+                        line=dict(color='#10B981', width=2, dash='dot'),
+                        hovertemplate="Vault: %{y:.0f}%<br>Time: %{x}<extra></extra>"
+                    ))
                 fig.update_layout(
                     template="plotly_dark",
                     paper_bgcolor="#080B10", plot_bgcolor="#0E131F",
                     margin=dict(l=40, r=40, t=20, b=40),
                     height=280,
                     yaxis=dict(title="Telemetry Value", gridcolor="#162032"),
-                    yaxis2=dict(title="QBER (%)", overlaying="y", side="right",
-                                range=[0, max(35, df_t['qber'].max() + 5)], gridcolor="#162032"),
+                    yaxis2=dict(title="QBER & Key Vault (%)", overlaying="y", side="right",
+                                range=[0, 105], gridcolor="#162032"),
                     xaxis=dict(gridcolor="#162032"),
                     hovermode='x unified',
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
