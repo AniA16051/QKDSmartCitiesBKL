@@ -1,0 +1,9 @@
+# QKD Smart City Dashboard — cloud deployment requirements
+# cache-bust: 2026-08-18-v2
+streamlit>=1.38.0,<2.0.0
+numpy>=1.26.0,<2.0.0
+pandas>=2.2.0,<3.0.0
+plotly>=5.18.0,<6.0.0
+paho-mqtt>=2.1.0,<3.0.0
+cryptography>=41.0.0
+streamlit-autorefresh>=1.0.1
