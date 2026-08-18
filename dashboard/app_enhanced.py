@@ -272,36 +272,115 @@ def render_overview_tab():
         if st.button("🛡️ REROUTE KEY SUPPLY FROM FINANCIAL DISTRICT", type="primary", use_container_width=True):
             st.success("Lifeline established! Auxiliary QKD trunk connected. All Key Vault reserves replenished to 100%.")
     
+    # Metropolitan Leaflet Geospatial Mesh Map
+    st.markdown("---")
+    st.markdown("### 🗺️ Metropolitan Geospatial Quantum Optical Mesh & Leafmap")
+    
+    display_nodes = dict(nodes)
+    if "custom_nodes" in st.session_state:
+        display_nodes.update(st.session_state.custom_nodes)
+    
+    if not display_nodes:
+        display_nodes = {
+            "traffic-node-07": {"status": "ok", "qber": 0.021, "lat": 12.9756, "lon": 77.6006},
+            "traffic-node-08": {"status": "ok", "qber": 0.019, "lat": 12.9782, "lon": 77.6068},
+            "hospital-node-01": {"status": "ok", "qber": 0.015, "lat": 12.9642, "lon": 77.5975},
+            "financial-core-01": {"status": "ok", "qber": 0.009, "lat": 12.9720, "lon": 77.6045},
+            "power-substation-01": {"status": "ok", "qber": 0.012, "lat": 12.9680, "lon": 77.6110},
+            "water-meter-14": {"status": "ok", "qber": 0.018, "lat": 12.9698, "lon": 77.5910},
+            "camera-22": {"status": "ok", "qber": 0.034, "lat": 12.9741, "lon": 77.5983},
+        }
+
+    m_enh = folium.Map(location=CITY_CENTER, zoom_start=13, tiles="CartoDB dark_matter")
+    node_coords = {}
+    
+    for node_id, info in display_nodes.items():
+        if isinstance(info, dict) and 'lat' in info and 'lon' in info:
+            lat, lon = info['lat'], info['lon']
+        else:
+            lat, lon = get_location(node_id)
+        node_coords[node_id] = (lat, lon)
+        
+        status = info.get("status", "ok")
+        qber = info.get("qber", 0.021)
+        color = "green" if status == "ok" else "red"
+        qber_str = f"{qber:.2%}" if isinstance(qber, (int, float)) else "2.10%"
+        
+        folium.CircleMarker(
+            location=(lat, lon),
+            radius=12,
+            color=color,
+            fill=True,
+            fill_color=color,
+            fill_opacity=0.8,
+            popup=f"{node_id}<br>Status: {status}<br>Key Vault: 100%<br>QBER: {qber_str}",
+            tooltip=node_id,
+        ).add_to(m_enh)
+
+    # Draw Quantum Optical Mesh Connections (Dotted Green on normal, Red on breach, Star on Reroute)
+    n_list = list(node_coords.keys())
+    n_count = len(n_list)
+    
+    if "reroute_active" in st.session_state and st.session_state.reroute_active:
+        # Hub-and-spoke star rerouting via Financial Core
+        hub = "financial-core-01" if "financial-core-01" in node_coords else n_list[0]
+        for other in n_list:
+            if other != hub:
+                folium.PolyLine(
+                    locations=[node_coords[hub], node_coords[other]],
+                    color="#06D6A0", weight=3, opacity=0.9, dash_array="8, 8"
+                ).add_to(m_enh)
+    else:
+        for idx in range(n_count):
+            u_id = n_list[idx]
+            v_id = n_list[(idx + 1) % n_count]
+            u_stat = display_nodes[u_id].get("status", "ok")
+            v_stat = display_nodes[v_id].get("status", "ok")
+            is_breached = (u_stat != "ok" or v_stat != "ok")
+            
+            folium.PolyLine(
+                locations=[node_coords[u_id], node_coords[v_id]],
+                color="#EF4444" if is_breached else "#10B981",
+                weight=2.5, opacity=0.85,
+                dash_array="6, 6"
+            ).add_to(m_enh)
+            
+            if n_count >= 4:
+                v2_id = n_list[(idx + 2) % n_count]
+                u2_stat = display_nodes[u_id].get("status", "ok")
+                v2_stat = display_nodes[v2_id].get("status", "ok")
+                is_breached2 = (u2_stat != "ok" or v2_stat != "ok")
+                folium.PolyLine(
+                    locations=[node_coords[u_id], node_coords[v2_id]],
+                    color="#EF4444" if is_breached2 else "#10B981",
+                    weight=1.5, opacity=0.6,
+                    dash_array="4, 6"
+                ).add_to(m_enh)
+
+    st_folium(m_enh, width=None, height=390, key="city_map_enhanced")
+
     # Node status table
     st.subheader("Node Status & Key Vault Reserves")
     
     node_data = []
-    for node_id, info in sorted(nodes.items()):
+    for node_id, info in sorted(display_nodes.items()):
         is_ok = info.get("status") == "ok"
         status_icon = "✓ Healthy" if is_ok else "⚠️ Draining (Vault Active)"
-        qber = info.get("qber_last", "N/A")
-        last_seen = info.get("last_seen", "N/A")
+        qber = info.get("qber_last", info.get("qber", "N/A"))
+        last_seen = info.get("last_seen", "Just now")
         vault_reserve = "100%" if is_ok else "35% (Depleting)"
         
         node_data.append({
             "Node ID": node_id,
             "Status": status_icon,
             "Key Vault": vault_reserve,
-            "QBER": f"{qber:.2f}%" if isinstance(qber, (int, float)) else qber,
+            "QBER": f"{qber:.2%}" if isinstance(qber, (int, float)) else qber,
             "Last Seen": last_seen
         })
     
     if node_data:
         df = pd.DataFrame(node_data)
         st.dataframe(df, use_container_width=True, hide_index=True)
-    else:
-        # Default smart city nodes preview if monitor waiting
-        default_nodes = [
-            {"Node ID": "NODE-TRF-01 (Traffic)", "Status": "✓ Healthy", "Key Vault": "100%", "QBER": "2.10%", "Last Seen": "Just now"},
-            {"Node ID": "NODE-WTR-01 (Utility)", "Status": "✓ Healthy", "Key Vault": "100%", "QBER": "1.80%", "Last Seen": "Just now"},
-            {"Node ID": "NODE-CAM-01 (Camera)", "Status": "✓ Healthy", "Key Vault": "100%", "QBER": "3.40%", "Last Seen": "Just now"},
-        ]
-        st.dataframe(pd.DataFrame(default_nodes), use_container_width=True, hide_index=True)
 
 
 def render_nodes_tab():
