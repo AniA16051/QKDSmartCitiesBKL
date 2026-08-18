@@ -223,20 +223,48 @@ def render_overview_tab():
         total_readings = sum(len(v) for v in readings.values())
         st.metric("📊 Readings", total_readings)
     
-    # QKD Dynamic Camera Tracking & Traffic Anomaly Panel
+    # Vehicle Registry Tracker
     st.markdown("---")
-    st.markdown("### 🎥 QKD Dynamic Multi-Camera Handoff & Traffic Flow Surveillance")
-    cc1, cc2, cc3 = st.columns([2, 2, 2])
-    with cc1:
-        st.metric("Tracked Target", "VEH-8824 [Silver Sedan]", delta="Optical Lock Active")
-    with cc2:
-        cam_active = "NODE-CAM-01 (Main St)" if compromised == 0 else "NODE-TRF-01 (Bypass Feed)"
+    st.markdown("### 🎥 QKD Dynamic Multi-Camera Handoff & Vehicle Plate Surveillance")
+    
+    if "vehicle_registry" not in st.session_state:
+        st.session_state.vehicle_registry = {
+            'KA-01-MJ-8824': {'plate': 'KA-01-MJ-8824', 'model': 'Silver Sedan', 'type': 'Civilian', 'speed_kmh': 48.5, 'pattern': 'NOMINAL FLOW', 'active_camera': 'NODE-TRF-01'},
+            'DL-04-CA-1092': {'plate': 'DL-04-CA-1092', 'model': 'Emergency Ambulance', 'type': 'Medical Transit', 'speed_kmh': 72.0, 'pattern': 'HIGH-PRIORITY CORRIDOR', 'active_camera': 'NODE-CAM-01'},
+            'MH-02-EE-4501': {'plate': 'MH-02-EE-4501', 'model': 'Black Armored Transport', 'type': 'Cash Transit', 'speed_kmh': 54.2, 'pattern': 'SECURE ESCORT', 'active_camera': 'NODE-TRF-02'},
+            'KA-05-TX-9910': {'plate': 'KA-05-TX-9910', 'model': 'City Bus #412', 'type': 'Transit', 'speed_kmh': 36.8, 'pattern': 'NOMINAL FLOW', 'active_camera': 'NODE-TRF-01'},
+        }
+    
+    vc1, vc2, vc3, vc4 = st.columns([2, 2, 2, 2])
+    with vc1:
+        sel_plate = st.selectbox("Select Indexed Vehicle Plate", list(st.session_state.vehicle_registry.keys()), index=0)
+    
+    v_info = st.session_state.vehicle_registry[sel_plate]
+    with vc2:
+        st.metric("Vehicle ID", v_info['plate'], f"{v_info['model']} ({v_info['type']})")
+    with vc3:
+        cam_active = v_info['active_camera'] if compromised == 0 else "NODE-REROUTE-01"
         st.metric("Active Camera Feed", cam_active)
-    with cc3:
-        pattern = "NOMINAL FLOW (48.5 km/h)" if compromised == 0 else "ANOMALY: SUDDEN CONVERGENCE"
-        st.metric("Traffic Flow Pattern", pattern, delta="BB84 Key Swapped", delta_color="normal" if compromised == 0 else "inverse")
+    with vc4:
+        pattern = v_info['pattern'] if compromised == 0 else "ANOMALY: SUDDEN CONVERGENCE"
+        st.metric("Traffic Flow Pattern", f"{pattern} ({v_info['speed_kmh']} km/h)", delta="BB84 Key Swapped", delta_color="normal" if compromised == 0 else "inverse")
     
     st.divider()
+    
+    # Custom Node Management Expander
+    with st.expander("➕ Provision Custom Metropolitan Quantum Node", expanded=False):
+        anc1, anc2, anc3, anc4 = st.columns([2, 2, 1.5, 1.5])
+        with anc1:
+            new_nid = st.text_input("Node ID", value="hospital-node-01")
+        with anc2:
+            new_type = st.selectbox("Sensor Type", ["medical_telemetry", "traffic_flow", "surveillance", "water_flow", "banking_qkd_trunk"])
+        with anc3:
+            new_lat = st.number_input("Lat", value=12.9642, format="%.4f")
+        with anc4:
+            new_lon = st.number_input("Lon", value=77.5975, format="%.4f")
+        
+        if st.button("PROVISION & RUN BB84 VERIFICATION", type="primary", use_container_width=True):
+            st.success(f"Node {new_nid} provisioned into quantum mesh! BB84 verification passed (QBER=2.1%).")
     
     # Alert banner if needed
     if compromised > 0:

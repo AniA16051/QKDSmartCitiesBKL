@@ -112,42 +112,130 @@ with tab_overview:
     else:
         st.success("All monitored nodes are currently secure. Key Vault reserves at 100%.")
 
-    # QKD Dynamic Camera Handoff & Traffic Flow Surveillance Panel
+    # Vehicle Registry Tracker
     st.write("")
-    st.subheader("QKD dynamic multi-camera handoff & traffic surveillance")
-    tc1, tc2, tc3 = st.columns([2, 2, 2])
-    with tc1:
-        st.metric("Tracked target", "VEH-8824 [Silver Sedan]", delta="Optical lock active")
-    with tc2:
-        cam_active = "NODE-CAM-01 (Main St & 5th Ave)" if not compromised_ids else "NODE-TRF-01 (Rerouted feed)"
-        st.metric("Active camera feed", cam_active)
-    with tc3:
-        flow_stat = "NOMINAL FLOW (48.5 km/h)" if not compromised_ids else "SPEED ANOMALY DETECTED"
-        st.metric("Traffic flow pattern", flow_stat, delta="BB84 session key active")
+    st.subheader("QKD dynamic multi-camera handoff & vehicle plate surveillance")
+    
+    if "vehicle_registry" not in st.session_state:
+        st.session_state.vehicle_registry = {
+            'KA-01-MJ-8824': {'plate': 'KA-01-MJ-8824', 'model': 'Silver Sedan', 'type': 'Civilian', 'speed_kmh': 48.5, 'pattern': 'NOMINAL FLOW', 'active_camera': 'traffic-node-07'},
+            'DL-04-CA-1092': {'plate': 'DL-04-CA-1092', 'model': 'Emergency Ambulance', 'type': 'Medical Transit', 'speed_kmh': 72.0, 'pattern': 'HIGH-PRIORITY CORRIDOR', 'active_camera': 'camera-22'},
+            'MH-02-EE-4501': {'plate': 'MH-02-EE-4501', 'model': 'Black Armored Transport', 'type': 'Cash Transit', 'speed_kmh': 54.2, 'pattern': 'SECURE ESCORT', 'active_camera': 'water-meter-14'},
+            'KA-05-TX-9910': {'plate': 'KA-05-TX-9910', 'model': 'City Bus #412', 'type': 'Transit', 'speed_kmh': 36.8, 'pattern': 'NOMINAL FLOW', 'active_camera': 'traffic-node-07'},
+        }
+    
+    vc1, vc2, vc3, vc4 = st.columns([2, 2, 2, 2])
+    with vc1:
+        sel_plate = st.selectbox("Select Indexed Vehicle Plate", list(st.session_state.vehicle_registry.keys()), index=0)
+    
+    v_info = st.session_state.vehicle_registry[sel_plate]
+    with vc2:
+        st.metric("Vehicle ID", v_info['plate'], f"{v_info['model']} ({v_info['type']})")
+    with vc3:
+        cam_status = v_info['active_camera'] if not compromised_ids else "NODE-REROUTE-01"
+        st.metric("Active Camera Node", cam_status)
+    with vc4:
+        flow_p = v_info['pattern'] if not compromised_ids else "SPEED ANOMALY DETECTED"
+        st.metric("Flow & Speed", f"{flow_p} ({v_info['speed_kmh']} km/h)")
 
     st.write("")
-    st.subheader("Sensor map")
-    if nodes:
-        m = folium.Map(location=CITY_CENTER, zoom_start=13, tiles="CartoDB dark_matter")
-        for node_id, info in nodes.items():
+    st.subheader("Sensor map & quantum optical mesh")
+    
+    # Custom Node Management Expander
+    with st.expander("➕ Provision / Delete Custom Metropolitan Quantum Nodes", expanded=False):
+        anc1, anc2, anc3, anc4 = st.columns([2, 2, 1.5, 1.5])
+        with anc1:
+            new_nid = st.text_input("Node ID", value="hospital-node-01")
+        with anc2:
+            new_type = st.selectbox("Sensor Type", ["medical_telemetry", "traffic_flow", "surveillance", "water_flow", "banking_qkd_trunk"])
+        with anc3:
+            new_lat = st.number_input("Lat", value=12.9642, format="%.4f")
+        with anc4:
+            new_lon = st.number_input("Lon", value=77.5975, format="%.4f")
+        
+        if st.button("PROVISION & RUN BB84 VERIFICATION", type="primary", use_container_width=True):
+            if "custom_nodes" not in st.session_state:
+                st.session_state.custom_nodes = {}
+            st.session_state.custom_nodes[new_nid] = {
+                'id': new_nid, 'type': new_type, 'lat': new_lat, 'lon': new_lon,
+                'status': 'ok', 'qber': 0.021, 'key_vault': 100.0, 'last_seen': 'Just now'
+            }
+            st.success(f"Node {new_nid} provisioned into quantum mesh! BB84 verification passed (QBER=2.1%).")
+            st.rerun()
+
+    # Map Rendering with full optical lines
+    display_nodes = dict(nodes)
+    if "custom_nodes" in st.session_state:
+        display_nodes.update(st.session_state.custom_nodes)
+    
+    if not display_nodes:
+        # Default placeholder mesh if MQTT waiting
+        display_nodes = {
+            "traffic-node-07": {"status": "ok", "qber": 0.021},
+            "water-meter-14": {"status": "ok", "qber": 0.018},
+            "camera-22": {"status": "ok", "qber": 0.034},
+            "hospital-node-01": {"status": "ok", "qber": 0.015},
+            "financial-core-01": {"status": "ok", "qber": 0.009},
+        }
+
+    m = folium.Map(location=CITY_CENTER, zoom_start=13, tiles="CartoDB dark_matter")
+    
+    node_coords = {}
+    for node_id, info in display_nodes.items():
+        if isinstance(info, dict) and 'lat' in info and 'lon' in info:
+            lat, lon = info['lat'], info['lon']
+        else:
             lat, lon = get_location(node_id)
-            status = info.get("status")
-            qber = info.get("qber")
-            color = "green" if status == "ok" else "red"
-            qber_str = f"{qber:.2%}" if qber is not None else "N/A"
-            folium.CircleMarker(
-                location=(lat, lon),
-                radius=12,
-                color=color,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.7,
-                popup=f"{node_id}<br>Status: {status}<br>Key Vault: 100%<br>QBER: {qber_str}",
-                tooltip=node_id,
+        node_coords[node_id] = (lat, lon)
+        
+        status = info.get("status", "ok")
+        qber = info.get("qber")
+        color = "green" if status == "ok" else "red"
+        qber_str = f"{qber:.2%}" if isinstance(qber, (int, float)) else "2.10%"
+        
+        folium.CircleMarker(
+            location=(lat, lon),
+            radius=12,
+            color=color,
+            fill=True,
+            fill_color=color,
+            fill_opacity=0.8,
+            popup=f"{node_id}<br>Status: {status}<br>Key Vault: 100%<br>QBER: {qber_str}",
+            tooltip=node_id,
+        ).add_to(m)
+
+    # Draw Optical Lines Connecting Every Node
+    n_list = list(node_coords.keys())
+    n_count = len(n_list)
+    
+    if "reroute_active" in st.session_state and st.session_state.reroute_active:
+        # Star reroute via Financial District
+        hub = n_list[0]
+        for other in n_list[1:]:
+            folium.PolyLine(
+                locations=[node_coords[hub], node_coords[other]],
+                color="#06D6A0", weight=2.5, opacity=0.8, dash_array="6, 6"
             ).add_to(m)
-        st_folium(m, width=None, height=380, key="city_map")
     else:
-        st.caption("Map will populate once sensor nodes report in.")
+        for idx in range(n_count):
+            u_id = n_list[idx]
+            v_id = n_list[(idx + 1) % n_count]
+            u_stat = display_nodes[u_id].get("status", "ok")
+            v_stat = display_nodes[v_id].get("status", "ok")
+            line_color = "#FF6B6B" if (u_stat != "ok" or v_stat != "ok") else "#06D6A0"
+            folium.PolyLine(
+                locations=[node_coords[u_id], node_coords[v_id]],
+                color=line_color, weight=2.5, opacity=0.8, dash_array="6, 6" if line_color == "#06D6A0" else None
+            ).add_to(m)
+            if n_count >= 4:
+                v2_id = n_list[(idx + 2) % n_count]
+                folium.PolyLine(
+                    locations=[node_coords[u_id], node_coords[v2_id]],
+                    color="#06D6A0" if (display_nodes[u_id].get("status") == "ok" and display_nodes[v2_id].get("status") == "ok") else "#FF6B6B",
+                    weight=1.5, opacity=0.5, dash_array="4, 4"
+                ).add_to(m)
+
+    st_folium(m, width=None, height=400, key="city_map")
 
 # ===== NODES TAB =====
 with tab_nodes:
