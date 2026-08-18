@@ -210,17 +210,46 @@ class IntegratedSmartCity:
         self.mqtt_client = None
         self.mqtt_connected = False
         self.terminal_logs = []
-        self.tracking_target = {
-            'vehicle_id': 'VEH-8824 [Silver Sedan]',
-            'active_camera': 'NODE-CAM-01',
-            'last_handoff': datetime.now(),
-            'speed_kmh': 48.5,
-            'pattern': 'NOMINAL FLOW',
-            'qkd_session_key': None
+        self.vehicles = {
+            'KA-01-MJ-8824': {'plate': 'KA-01-MJ-8824', 'model': 'Silver Sedan', 'type': 'Civilian', 'speed_kmh': 48.5, 'pattern': 'NOMINAL FLOW', 'active_camera': 'NODE-CAM-01', 'qkd_key': None, 'last_seen': datetime.now()},
+            'DL-04-CA-1092': {'plate': 'DL-04-CA-1092', 'model': 'Emergency Ambulance', 'type': 'Medical Transit', 'speed_kmh': 72.0, 'pattern': 'HIGH-PRIORITY CORRIDOR', 'active_camera': 'NODE-TRF-01', 'qkd_key': None, 'last_seen': datetime.now()},
+            'MH-02-EE-4501': {'plate': 'MH-02-EE-4501', 'model': 'Black Armored Transport', 'type': 'Cash Transit', 'speed_kmh': 54.2, 'pattern': 'SECURE ESCORT', 'active_camera': 'NODE-TRF-02', 'qkd_key': None, 'last_seen': datetime.now()},
+            'KA-05-TX-9910': {'plate': 'KA-05-TX-9910', 'model': 'City Bus #412', 'type': 'Transit', 'speed_kmh': 36.8, 'pattern': 'NOMINAL FLOW', 'active_camera': 'NODE-CAM-01', 'qkd_key': None, 'last_seen': datetime.now()},
         }
+        self.selected_vehicle_plate = 'KA-01-MJ-8824'
         
-        for name in self.sensors:
+        for name in list(self.sensors.keys()):
             self.simulate_sensor(name)
+
+    def add_custom_node(self, node_id, node_type, location, lat, lon):
+        """Add a new node and immediately run BB84 protocol verification."""
+        key = f"node_{len(self.sensors) + 1}_{node_id.lower().replace('-', '_')}"
+        self.sensors[key] = {
+            'id': node_id.upper(),
+            'type': node_type,
+            'location': location,
+            'lat': float(lat),
+            'lon': float(lon),
+            'status': 'secure',
+            'qber': 0.0,
+            'last_key': None,
+            'key_vault': 100.0,
+            'data_points': [],
+            'last_update': datetime.now()
+        }
+        self.simulate_sensor(key)
+        self.log_terminal(f"NODE PROVISIONED :: [ {node_id.upper()} ] BB84 VERIFICATION PASSED. SECURE KEY ESTABLISHED.", "SECURE")
+        return key
+
+    def delete_node(self, node_key):
+        """Delete an existing node from the network."""
+        if node_key in self.sensors:
+            node_id = self.sensors[node_key]['id']
+            del self.sensors[node_key]
+            self.isolated_nodes.discard(node_key)
+            self.log_terminal(f"NODE DECOMMISSIONED :: [ {node_id} ] SEVERED FROM QUANTUM BACKBONE", "WARN")
+            return True
+        return False
 
     @property
     def attack_active(self):
@@ -410,17 +439,16 @@ class IntegratedSmartCity:
         if len(sensor['data_points']) > 25:
             sensor['data_points'] = sensor['data_points'][-25:]
         
-        # Dynamic BB84 camera tracking & handoff
+        # Dynamic BB84 multi-vehicle tracking & camera handoff
         if sensor_name in ['traffic_light', 'traffic_junction', 'surveillance'] and sensor['status'] != 'blackout' and not is_isolated:
-            cams = ['NODE-CAM-01', 'NODE-TRF-01', 'NODE-TRF-02']
-            next_cam = random.choice(cams)
-            self.tracking_target['active_camera'] = next_cam
-            self.tracking_target['speed_kmh'] = round(random.uniform(42.0, 68.0), 1)
-            patterns = ['NOMINAL FLOW', 'NOMINAL FLOW', 'SUDDEN LANE CONVERGENCE', 'SPEED ANOMALY']
-            self.tracking_target['pattern'] = random.choice(patterns)
-            if sensor['last_key']:
-                self.tracking_target['qkd_session_key'] = sensor['last_key'][:16]
-            self.tracking_target['last_handoff'] = datetime.now()
+            cam_id = sensor['id']
+            for v_plate, v_data in self.vehicles.items():
+                if random.random() < 0.6:
+                    v_data['active_camera'] = cam_id
+                    v_data['speed_kmh'] = round(random.uniform(32.0, 78.0), 1)
+                    if sensor['last_key']:
+                        v_data['qkd_key'] = sensor['last_key'][:16]
+                    v_data['last_seen'] = datetime.now()
         
         self.publish_sensor_data(sensor_name, sensor_data)
         return sensor_data
@@ -681,16 +709,9 @@ def main():
     # ══════════════════════════════════════════════════════════════
     c1, c2, c3, c4, c5 = st.columns([2.5, 2.5, 2, 2, 2])
     
-    target_mapping = {
-        "All Nodes": "All Nodes",
-        "Traffic Signal 01 (Main St)": "traffic_light",
-        "Traffic Signal 02 (MG Rd)": "traffic_junction",
-        "Hospital Telemetry": "hospital_node",
-        "Financial Core (QKD Trunk)": "financial_core",
-        "Power Substation": "power_substation",
-        "Water Utility": "water_meter",
-        "Surveillance Camera": "surveillance"
-    }
+    target_mapping = {"All Nodes": "All Nodes"}
+    for k, s in sc.sensors.items():
+        target_mapping[f"{s['id']} ({s['location']})"] = k
 
     with c1:
         selected_target_label = st.selectbox(
@@ -790,90 +811,91 @@ def main():
     # ══════════════════════════════════════════════════════════════
     st.markdown('<div class="section-hdr">Smart City Metropolitan IoT Nodes & Key Vault Reserves</div>', unsafe_allow_html=True)
     
-    sensor_meta = [
-        ('traffic_light', 'Traffic Signal 01', 'Vehicle throughput at Main & 5th Ave.'),
-        ('traffic_junction', 'Traffic Signal 02', 'High-density MG Road Ring Junction flow.'),
-        ('hospital_node', 'Hospital Emergency Telemetry', 'Encrypted patient vitals and ICU telemetry.'),
-        ('financial_core', 'Financial District Core', 'Inter-bank transaction settlement QKD trunk.'),
-        ('power_substation', 'Power Grid Substation', 'Grid telemetry & phase angle monitoring.'),
-        ('water_meter', 'Water Utility', 'Municipal reservoir pump flow tracking.'),
-        ('surveillance', 'Surveillance Camera', 'Optical public monitoring node with QKD handoff.'),
-    ]
-    
-    # Render cards in rows of 3 and 4
-    row1_cols = st.columns(4)
-    row2_cols = st.columns(3)
-    card_cols = list(row1_cols) + list(row2_cols)
-    
-    for col, (key, label, tooltip) in zip(card_cols, sensor_meta):
-        s = sc.sensors[key]
-        status_code = s['status']
-        is_iso = key in sc.isolated_nodes
-        with col:
-            with st.container(border=True):
-                st.markdown(f"**{label}**")
-                st.caption(f"{s['location']}  ·  `{s['id']}`")
-                
-                m1, m2, m3 = st.columns(3)
-                m1.metric(
-                    "QBER",
-                    f"{s['qber']:.1f}%",
-                    help=f"Quantum Bit Error Rate for this node. {tooltip}"
-                )
-                
-                if is_iso:
-                    stat_str = "ISOLATED"
-                elif status_code == 'secure':
-                    stat_str = "SECURE"
-                elif status_code == 'compromised':
-                    stat_str = "DRAINING"
-                else:
-                    stat_str = "BLACKOUT"
-                
-                m2.metric(
-                    "Status",
-                    stat_str,
-                    help="SECURE: Normal. DRAINING: Vault active. BLACKOUT: Vault 0%. ISOLATED: Optical links severed."
-                )
-                m3.metric(
-                    "Key Vault",
-                    f"{s.get('key_vault', 100.0):.0f}%",
-                    help="Stored reserve of BB84 keys."
-                )
-                
-                vault_pct = max(0.0, min(1.0, s.get('key_vault', 100.0) / 100.0))
-                st.progress(vault_pct, text=f"Vault: {s.get('key_vault', 100.0):.0f}%")
-                
-                if s['last_key'] and not is_iso:
-                    st.code(f"Key: {s['last_key'][:10]}...{s['last_key'][-4:]}", language=None)
-                else:
-                    st.code("Key: REFUSED / SEVERED", language=None)
-                
-                b1, b2 = st.columns(2)
-                with b1:
-                    if st.button("PING", key=f"ping_{key}", use_container_width=True):
-                        success = sc.ping_node(key)
-                        if success:
-                            st.toast(f"Ping OK for {s['id']}")
-                        else:
-                            st.toast(f"Ping FAILED for {s['id']}")
-                        st.rerun()
-                with b2:
+    # Node Manager: Add Node Expander
+    with st.expander("➕ Provision / Manage Metropolitan Quantum Nodes", expanded=False):
+        ac1, ac2, ac3, ac4, ac5 = st.columns([1.5, 1.5, 2, 1, 1])
+        with ac1:
+            new_node_id = st.text_input("New Node ID", value=f"NODE-NEW-0{len(sc.sensors)+1}")
+        with ac2:
+            new_node_type = st.selectbox("Node Type", ["traffic_flow", "medical_telemetry", "banking_qkd_trunk", "smart_grid", "water_consumption", "security_monitoring"])
+        with ac3:
+            new_location = st.text_input("Location", value="South Tech Park Hub")
+        with ac4:
+            new_lat = st.number_input("Latitude", value=12.9650, format="%.4f")
+        with ac5:
+            new_lon = st.number_input("Longitude", value=77.6050, format="%.4f")
+        
+        if st.button("PROVISION & RUN BB84 VERIFICATION", type="primary", use_container_width=True):
+            sc.add_custom_node(new_node_id, new_node_type, new_location, new_lat, new_lon)
+            st.success(f"Node {new_node_id} successfully added to quantum mesh! BB84 verification passed.")
+            st.rerun()
+
+    # Dynamic render cards in rows of 4
+    sensor_items = list(sc.sensors.items())
+    num_cards = len(sensor_items)
+    for i in range(0, num_cards, 4):
+        chunk = sensor_items[i:i+4]
+        cols = st.columns(4)
+        for col_idx, (key, s) in enumerate(chunk):
+            status_code = s['status']
+            is_iso = key in sc.isolated_nodes
+            with cols[col_idx]:
+                with st.container(border=True):
+                    st.markdown(f"**{s['id']}** ({s['type']})")
+                    st.caption(f"{s['location']}")
+                    
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("QBER", f"{s['qber']:.1f}%")
+                    
                     if is_iso:
-                        if st.button("RECONNECT", key=f"rec_{key}", use_container_width=True):
-                            sc.fix_and_restore_node(key)
-                            st.rerun()
+                        stat_str = "ISOLATED"
+                    elif status_code == 'secure':
+                        stat_str = "SECURE"
+                    elif status_code == 'compromised':
+                        stat_str = "DRAINING"
                     else:
-                        if st.button("ISOLATE", key=f"iso_{key}", use_container_width=True):
-                            sc.isolate_standby_node(key)
+                        stat_str = "BLACKOUT"
+                    
+                    m2.metric("Status", stat_str)
+                    m3.metric("Vault", f"{s.get('key_vault', 100.0):.0f}%")
+                    
+                    vault_pct = max(0.0, min(1.0, s.get('key_vault', 100.0) / 100.0))
+                    st.progress(vault_pct, text=f"Vault: {s.get('key_vault', 100.0):.0f}%")
+                    
+                    if s['last_key'] and not is_iso:
+                        st.code(f"Key: {s['last_key'][:10]}...{s['last_key'][-4:]}", language=None)
+                    else:
+                        st.code("Key: REFUSED / SEVERED", language=None)
+                    
+                    b1, b2, b3 = st.columns([1, 1, 0.8])
+                    with b1:
+                        if st.button("PING", key=f"ping_{key}", use_container_width=True):
+                            success = sc.ping_node(key)
+                            if success:
+                                st.toast(f"Ping OK for {s['id']}")
+                            else:
+                                st.toast(f"Ping FAILED for {s['id']}")
                             st.rerun()
-                
-                if s['data_points']:
-                    val = s['data_points'][-1]['value']
-                    st.caption(f"Latest: **{val}**  ·  {s['last_update'].strftime('%H:%M:%S')}")
+                    with b2:
+                        if is_iso:
+                            if st.button("RECONNECT", key=f"rec_{key}", use_container_width=True):
+                                sc.fix_and_restore_node(key)
+                                st.rerun()
+                        else:
+                            if st.button("ISOLATE", key=f"iso_{key}", use_container_width=True):
+                                sc.isolate_standby_node(key)
+                                st.rerun()
+                    with b3:
+                        if st.button("🗑️", key=f"del_{key}", help=f"Delete node {s['id']}"):
+                            sc.delete_node(key)
+                            st.rerun()
+                    
+                    if s['data_points']:
+                        val = s['data_points'][-1]['value']
+                        st.caption(f"Latest: **{val}**  ·  {s['last_update'].strftime('%H:%M:%S')}")
     
     # ══════════════════════════════════════════════════════════════
-    # GEOSPATIAL MAP WITH OPTICAL FIBER MESH + QBER CHART
+    # GEOSPATIAL MAP WITH DYNAMIC OPTICAL FIBER MESH + QBER CHART
     # ══════════════════════════════════════════════════════════════
     st.markdown("---")
     
@@ -899,31 +921,23 @@ def main():
         
         fig_map = go.Figure()
         
-        # Draw Optical Fiber Quantum Mesh Links
-        # Define baseline mesh topology connections
+        # Connect each node with optical lines across the mesh
+        all_keys = list(sc.sensors.keys())
+        mesh_edges = []
+        
         if sc.rerouted_lifeline:
-            # Rerouted via Financial District Hub star-topology
-            mesh_edges = [
-                ('financial_core', 'traffic_light'),
-                ('financial_core', 'traffic_junction'),
-                ('financial_core', 'hospital_node'),
-                ('financial_core', 'power_substation'),
-                ('financial_core', 'water_meter'),
-                ('financial_core', 'surveillance'),
-            ]
+            # Hub-and-spoke star reroute via central quantum core
+            hub_key = 'financial_core' if 'financial_core' in sc.sensors else all_keys[0]
+            for other_k in all_keys:
+                if other_k != hub_key:
+                    mesh_edges.append((hub_key, other_k))
         else:
-            # Standard city ring & cross-grid topology
-            mesh_edges = [
-                ('traffic_light', 'traffic_junction'),
-                ('traffic_junction', 'financial_core'),
-                ('financial_core', 'power_substation'),
-                ('power_substation', 'hospital_node'),
-                ('hospital_node', 'water_meter'),
-                ('water_meter', 'surveillance'),
-                ('surveillance', 'traffic_light'),
-                ('financial_core', 'hospital_node'),
-                ('traffic_light', 'hospital_node')
-            ]
+            # Full perimeter ring + nearest neighbor cross-connects (every node is connected)
+            n_nodes = len(all_keys)
+            for idx in range(n_nodes):
+                mesh_edges.append((all_keys[idx], all_keys[(idx + 1) % n_nodes]))
+                if n_nodes >= 4:
+                    mesh_edges.append((all_keys[idx], all_keys[(idx + 2) % n_nodes]))
         
         for u_key, v_key in mesh_edges:
             u = sc.sensors.get(u_key)
@@ -935,7 +949,7 @@ def main():
             v_broken = (v_key in sc.isolated_nodes) or (v['status'] in ['compromised', 'blackout'])
             
             if u_key in sc.isolated_nodes or v_key in sc.isolated_nodes:
-                # Isolated node: line completely severed (do not draw or draw faint dark gray)
+                # Isolated node: optical line severed completely
                 continue
             elif u_broken or v_broken:
                 # Breached channel link: red line
@@ -948,7 +962,7 @@ def main():
                     showlegend=False
                 ))
             else:
-                # Active clean quantum optical line: green dotted/dashed line
+                # Active clean quantum optical line: green line
                 fig_map.add_trace(go.Scattermapbox(
                     lat=[u['lat'], v['lat']],
                     lon=[u['lon'], v['lon']],
@@ -977,9 +991,11 @@ def main():
             hoverinfo='text', hovertext=hovers, showlegend=False
         ))
         
+        center_lat = np.mean(lats) if lats else 12.9715
+        center_lon = np.mean(lons) if lons else 77.6010
         fig_map.update_layout(
             mapbox_style="carto-darkmatter",
-            mapbox=dict(center=dict(lat=12.9715, lon=77.6010), zoom=12.6),
+            mapbox=dict(center=dict(lat=center_lat, lon=center_lon), zoom=12.4),
             margin=dict(l=0, r=0, t=0, b=0),
             height=370,
             paper_bgcolor="#080B10",
@@ -1090,39 +1106,57 @@ def main():
         st.markdown(f'<div class="term-output">{term_content}</div>', unsafe_allow_html=True)
     
     # ══════════════════════════════════════════════════════════════
-    # QUANTUM CAMERA HANDOFF & TRAFFIC ANOMALY MONITOR
+    # QUANTUM CAMERA HANDOFF & VEHICLE LICENSE PLATE TRACKER
     # ══════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.markdown('<div class="section-hdr">QKD Dynamic Multi-Camera Handoff & Traffic Flow Surveillance</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-hdr">QKD Dynamic Multi-Camera Handoff & Vehicle Plate Surveillance</div>', unsafe_allow_html=True)
     
-    trk = sc.tracking_target
-    active_cam_node = sc.sensors.get('surveillance' if trk['active_camera'] == 'NODE-CAM-01' else 'traffic_light')
-    is_cam_blackout = (active_cam_node['status'] == 'blackout') or ('surveillance' in sc.isolated_nodes and trk['active_camera'] == 'NODE-CAM-01')
+    vp_col1, vp_col2 = st.columns([1.5, 3.5])
+    with vp_col1:
+        plate_options = list(sc.vehicles.keys())
+        selected_plate = st.selectbox(
+            "Select Tracked Vehicle Plate",
+            plate_options,
+            index=0,
+            help="Indexed metropolitan license plate registry. Tracks target velocity, anomaly patterns, and QKD camera swaps."
+        )
+        sc.selected_vehicle_plate = selected_plate
+    
+    v_data = sc.vehicles[selected_plate]
+    
+    active_cam_node = None
+    for s_k, s_val in sc.sensors.items():
+        if s_val['id'] == v_data['active_camera']:
+            active_cam_node = s_val
+            break
+    
+    is_cam_blackout = (active_cam_node is None) or (active_cam_node['status'] == 'blackout') or (active_cam_node['id'] in [sc.sensors[k]['id'] for k in sc.isolated_nodes if k in sc.sensors])
     
     tc1, tc2, tc3, tc4 = st.columns([2, 1.5, 2, 2.5])
     with tc1:
         st.metric(
-            "Tracked Target",
-            trk['vehicle_id'],
-            help="Intelligent metropolitan tracking: automated optical camera handoff across urban intersections secured by BB84 quantum keys."
+            "Vehicle License Plate",
+            f"{v_data['plate']}",
+            f"{v_data['model']} ({v_data['type']})",
+            help="License plate recognized via optical edge vision, encrypted with BB84 keys."
         )
     with tc2:
-        cam_disp = "OFFLINE (ISOLATED)" if is_cam_blackout else trk['active_camera']
+        cam_disp = "OFFLINE (ISOLATED)" if is_cam_blackout else v_data['active_camera']
         st.metric(
             "Active Camera Feed",
             cam_disp,
             help="Current video feed streaming target tracking metadata."
         )
     with tc3:
-        pattern_color = "#EF4444" if "ANOMALY" in trk['pattern'] else "#10B981"
+        pattern_color = "#EF4444" if "ANOMALY" in v_data['pattern'] else "#10B981"
         st.markdown(f"""
         <div style="background: var(--bg-panel); border: 1px solid var(--border); padding: 10px 14px; height: 100%;">
-            <div style="color: var(--text-muted); font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; font-weight: 600; text-transform: uppercase;">Traffic Pattern Analysis</div>
-            <div style="color: {pattern_color}; font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 0.95rem; margin-top: 4px;">{trk['pattern']} ({trk['speed_kmh']} km/h)</div>
+            <div style="color: var(--text-muted); font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; font-weight: 600; text-transform: uppercase;">Traffic Pattern & Speed</div>
+            <div style="color: {pattern_color}; font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 0.95rem; margin-top: 4px;">{v_data['pattern']} ({v_data['speed_kmh']} km/h)</div>
         </div>
         """, unsafe_allow_html=True)
     with tc4:
-        key_disp = trk['qkd_session_key'] if (trk['qkd_session_key'] and not is_cam_blackout) else "BLACKOUT (UNENCRYPTED FEED REFUSED)"
+        key_disp = v_data['qkd_key'] if (v_data['qkd_key'] and not is_cam_blackout) else "BLACKOUT (UNENCRYPTED FEED REFUSED)"
         st.markdown(f"""
         <div style="background: var(--bg-panel); border: 1px solid var(--border); padding: 10px 14px; height: 100%;">
             <div style="color: var(--text-muted); font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; font-weight: 600; text-transform: uppercase;">Camera Handoff BB84 Key Ring</div>
@@ -1131,19 +1165,14 @@ def main():
         """, unsafe_allow_html=True)
     
     # ══════════════════════════════════════════════════════════════
-    # TREND CHARTS (Tabbed for All City Nodes)
+    # TREND CHARTS (Dynamic Tabs for All City Nodes)
     # ══════════════════════════════════════════════════════════════
     st.markdown("---")
     st.markdown('<div class="section-hdr">Telemetry, Key Vault & QBER Time Series</div>', unsafe_allow_html=True)
     
-    tab_labels = [
-        "Traffic 01", "Traffic 02 (MG Rd)", "Hospital ICU", 
-        "Financial Core", "Power Grid", "Water Utility", "Surveillance"
-    ]
-    tab_keys = [
-        'traffic_light', 'traffic_junction', 'hospital_node',
-        'financial_core', 'power_substation', 'water_meter', 'surveillance'
-    ]
+    sensor_items = list(sc.sensors.items())
+    tab_labels = [f"{s['id']}" for k, s in sensor_items]
+    tab_keys = [k for k, s in sensor_items]
     tabs = st.tabs(tab_labels)
     
     for tab, key in zip(tabs, tab_keys):
@@ -1186,7 +1215,7 @@ def main():
                 )
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("Collecting data points — click 'Execute Telemetry Cycle' to generate readings.")
+                st.info(f"Collecting data points for {s['id']} — click 'Execute Telemetry Cycle' to generate readings.")
     
     # ══════════════════════════════════════════════════════════════
     # SECURITY AUDIT LOG
