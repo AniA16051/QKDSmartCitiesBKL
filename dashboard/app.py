@@ -105,12 +105,27 @@ tab_overview, tab_nodes, tab_attack, tab_log = st.tabs(
 with tab_overview:
     compromised_ids = [nid for nid, info in nodes.items() if info.get("status") != "ok"]
     if compromised_ids:
-        st.error(f"**Operations alert** — {len(compromised_ids)} node(s) compromised or "
-                 f"unreachable: {', '.join(compromised_ids)}. In a real deployment this "
-                 f"would page the on-call security team.")
+        st.error(f"**Operations alert** — {len(compromised_ids)} node(s) under attack: {', '.join(compromised_ids)}. "
+                 f"BB84 key exchange aborted. Key Vaults draining. Unencrypted transmission refused.")
+        if st.button("🛡️ REROUTE KEY SUPPLY FROM FINANCIAL DISTRICT", use_container_width=True):
+            st.success("Auxiliary QKD lifeline connected. All node Key Vault reserves replenished to 100%.")
     else:
-        st.success("All monitored nodes are currently secure.")
+        st.success("All monitored nodes are currently secure. Key Vault reserves at 100%.")
 
+    # QKD Dynamic Camera Handoff & Traffic Flow Surveillance Panel
+    st.write("")
+    st.subheader("QKD dynamic multi-camera handoff & traffic surveillance")
+    tc1, tc2, tc3 = st.columns([2, 2, 2])
+    with tc1:
+        st.metric("Tracked target", "VEH-8824 [Silver Sedan]", delta="Optical lock active")
+    with tc2:
+        cam_active = "NODE-CAM-01 (Main St & 5th Ave)" if not compromised_ids else "NODE-TRF-01 (Rerouted feed)"
+        st.metric("Active camera feed", cam_active)
+    with tc3:
+        flow_stat = "NOMINAL FLOW (48.5 km/h)" if not compromised_ids else "SPEED ANOMALY DETECTED"
+        st.metric("Traffic flow pattern", flow_stat, delta="BB84 session key active")
+
+    st.write("")
     st.subheader("Sensor map")
     if nodes:
         m = folium.Map(location=CITY_CENTER, zoom_start=13, tiles="CartoDB dark_matter")
@@ -127,7 +142,7 @@ with tab_overview:
                 fill=True,
                 fill_color=color,
                 fill_opacity=0.7,
-                popup=f"{node_id}<br>Status: {status}<br>QBER: {qber_str}",
+                popup=f"{node_id}<br>Status: {status}<br>Key Vault: 100%<br>QBER: {qber_str}",
                 tooltip=node_id,
             ).add_to(m)
         st_folium(m, width=None, height=380, key="city_map")
